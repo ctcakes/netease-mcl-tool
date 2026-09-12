@@ -330,29 +330,39 @@ public sealed partial class MainWindow : Window
     private async void StartButton_Click(object sender, RoutedEventArgs e)
     {
         if (_launcherPath is null) return;
-        Directory.CreateDirectory(_runtimeDir);
-        var injectorPath = Path.Combine(_runtimeDir, "injector.exe"); var proxyPath = Path.Combine(_runtimeDir, "MinecraftProxy.dll"); var logPath = Path.Combine(_runtimeDir, "injector.log");
-        ExtractResource("MclLauncher.Resources.injector.exe", injectorPath); ExtractResource("MclLauncher.Resources.MinecraftProxy.dll", proxyPath);
-        var existingInjector = FindProcessAtPath(injectorPath);
-        if (existingInjector is not null)
+        StartButton.IsEnabled = false;
+        try
         {
-            if (await Confirm("injector 已在运行", $"PID {existingInjector.Id} 的 injector.exe 已存在，是否重启 injector？", "重启")) { TryKill(existingInjector); existingInjector = null; } else return;
+            Directory.CreateDirectory(_runtimeDir);
+            var injectorPath = Path.Combine(_runtimeDir, "injector.exe"); var proxyPath = Path.Combine(_runtimeDir, "MinecraftProxy.dll"); var logPath = Path.Combine(_runtimeDir, "injector.log");
+            ExtractResource("MclLauncher.Resources.injector.exe", injectorPath); ExtractResource("MclLauncher.Resources.MinecraftProxy.dll", proxyPath);
+            var existingInjector = FindProcess("injector.exe");
+            if (existingInjector is not null)
+            {
+                if (await Confirm("injector 已在运行", $"PID {existingInjector.Id} 的 injector.exe 已存在，是否重启 injector？", "重启")) TryKill(existingInjector); else { StartButton.IsEnabled = true; return; }
+            }
+            if (FindProcess("WPFLauncher.exe") is null)
+            {
+                _launcher = Process.Start(new ProcessStartInfo(_launcherPath) { WorkingDirectory = Path.GetDirectoryName(_launcherPath), UseShellExecute = true });
+                Log("已启动 WPFLauncher.exe。");
+            }
+            else Log("已复用正在运行的 WPFLauncher.exe。");
+            File.WriteAllText(logPath, "", Encoding.UTF8);
+            var command = $"\"{injectorPath}\" \"{proxyPath}\" > \"{logPath}\" 2>&1";
+            var shell = Process.Start(new ProcessStartInfo("cmd.exe", "/d /c \"" + command + "\"") { WorkingDirectory = _runtimeDir, UseShellExecute = false, CreateNoWindow = true });
+            await Task.Delay(250);
+            _injector = FindProcess("injector.exe") ?? shell;
+            _injectorExitLogged = false;
+            Log($"已启动 injector，PID {_injector?.Id}。已启动/复用 WPFLauncher。");
+            SetProxyGameStatus("等待 proxy 游戏端连接 127.0.0.1:25565", ProxyVisualState.Warning);
+            StartButton.IsEnabled = false; StopButton.IsEnabled = true; StartMonitor(logPath);
         }
-        if (FindProcessAtPath(_launcherPath) is null)
+        catch (Exception ex)
         {
-            try { _launcher = Process.Start(new ProcessStartInfo(_launcherPath) { WorkingDirectory = Path.GetDirectoryName(_launcherPath), UseShellExecute = true }); Log("已启动 WPFLauncher.exe。"); }
-            catch (Exception ex) { Log($"启动 WPFLauncher 失败：{ex.Message}"); return; }
+            StartButton.IsEnabled = true;
+            Log($"一键启动失败：{ex}");
+            await ShowMessage("一键启动失败", ex.ToString(), "确定");
         }
-        File.WriteAllText(logPath, "", Encoding.UTF8);
-        var command = $"\"{injectorPath}\" \"{proxyPath}\" > \"{logPath}\" 2>&1";
-        var shell = Process.Start(new ProcessStartInfo("cmd.exe", "/d /c \"" + command + "\"") { WorkingDirectory = _runtimeDir, UseShellExecute = false, CreateNoWindow = true });
-        await Task.Delay(250);
-        _injector = FindProcessAtPath(injectorPath) ?? shell;
-        _injectorExitLogged = false;
-        Log($"已启动 injector，PID {_injector?.Id}。已启动/复用 WPFLauncher。");
-        SetProxyGameStatus("等待 proxy 游戏端连接 127.0.0.1:25565", ProxyVisualState.Warning);
-        StartButton.IsEnabled = false; StopButton.IsEnabled = true; StartMonitor(logPath);
-        await ShowMessage("可以启动网易游戏端", "injector 和 WPFLauncher 已启动，可以启动网易游戏端了。", "确定");
     }
 
     private void StartMonitor(string logPath)
@@ -445,15 +455,14 @@ public sealed partial class MainWindow : Window
 
     private void RefreshProcesses()
     {
-        var wpfl = _launcherPath is null ? null : FindProcessAtPath(_launcherPath); var inj = FindProcessAtPath(Path.Combine(_runtimeDir, "injector.exe"));
+        var wpfl = FindProcess("WPFLauncher.exe"); var inj = FindProcess("injector.exe");
         LauncherStatus.Text = wpfl is null ? "未运行" : $"运行中 · PID {wpfl.Id}"; InjectorStatus.Text = inj is null ? "未运行" : $"运行中 · PID {inj.Id}";
         StopButton.IsEnabled = wpfl is not null || inj is not null; StartButton.IsEnabled = _launcherPath is not null && PatchStatus.Text.Contains("通过") && inj is null;
     }
 
-    private async void StopButton_Click(object sender, RoutedEventArgs e) { _monitorCts?.Cancel(); TryKill(_launcher); TryKill(_injector); if (_launcherPath is not null) TryKill(FindProcessAtPath(_launcherPath)); Log("已请求退出 WPFLauncher 和 injector。"); SetProxyGameStatus("未启动", ProxyVisualState.Neutral); await Task.Delay(250); RefreshProcesses(); }
+    private async void StopButton_Click(object sender, RoutedEventArgs e) { _monitorCts?.Cancel(); TryKill(_launcher); TryKill(_injector); TryKill(FindProcess("WPFLauncher.exe")); TryKill(FindProcess("injector.exe")); Log("已请求退出 WPFLauncher 和 injector。"); SetProxyGameStatus("未启动", ProxyVisualState.Neutral); await Task.Delay(250); RefreshProcesses(); }
 
-    private static Process? FindProcess(string name) => Process.GetProcessesByName(Path.GetFileNameWithoutExtension(name)).FirstOrDefault(p => IsAlive(p));
-    private static Process? FindProcessAtPath(string path) => Process.GetProcessesByName(Path.GetFileNameWithoutExtension(path)).FirstOrDefault(p => { try { return IsAlive(p) && string.Equals(p.MainModule?.FileName, path, StringComparison.OrdinalIgnoreCase); } catch { return false; } });
+    private static Process? FindProcess(string name) => Process.GetProcessesByName(Path.GetFileNameWithoutExtension(name)).FirstOrDefault(IsAlive);
     private static bool IsAlive(Process? p) { try { return p is not null && !p.HasExited; } catch { return false; } }
     private static void TryKill(Process? p) { try { if (IsAlive(p)) p!.Kill(true); } catch { } }
     private static string HashFile(string path) { using var md5 = MD5.Create(); using var stream = File.OpenRead(path); return Convert.ToHexString(md5.ComputeHash(stream)).ToLowerInvariant(); }
