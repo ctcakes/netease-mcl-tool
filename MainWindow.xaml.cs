@@ -39,12 +39,26 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Ensure4399DemoFile();
         SetProxyGameStatus("未启动", ProxyVisualState.Neutral);
         Closed += (_, _) => _monitorCts?.Cancel();
         Log("程序已启动，管理员权限已启用。\n");
         DispatcherQueue.TryEnqueue(async () => await RestoreSavedLaunchersAsync());
     }
 
+    private void Ensure4399DemoFile()
+    {
+        try
+        {
+            var demoPath = Path.Combine(AppContext.BaseDirectory, "4399_demo.txt");
+            if (!File.Exists(demoPath))
+                ExtractResource("MclLauncher.Resources.4399_demo.txt", demoPath);
+        }
+        catch (Exception ex)
+        {
+            LogSafe($"4399 demo 文件初始化失败：{ex.Message}");
+        }
+    }
     private void Log(string message)
     {
         if (!DispatcherQueue.HasThreadAccess)
@@ -853,6 +867,7 @@ internal static class DispatcherQueueExtensions
     public static Task EnqueueAsync(this Microsoft.UI.Dispatching.DispatcherQueue queue, Action action)
     { var tcs = new TaskCompletionSource(); if (!queue.TryEnqueue(() => { try { action(); tcs.SetResult(); } catch (Exception ex) { tcs.SetException(ex); } })) tcs.SetCanceled(); return tcs.Task; }
 }
+
 
 
 
