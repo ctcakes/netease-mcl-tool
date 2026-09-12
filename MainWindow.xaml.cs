@@ -355,7 +355,7 @@ public sealed partial class MainWindow : Window
             var proxyPath = Path.Combine(_runtimeDir, "MinecraftProxy.dll");
             var logPath = Path.Combine(_runtimeDir, "injector.log");
 
-            var existingInjector = FindProcessAtPath(injectorPath);
+            var existingInjector = await Task.Run(() => FindProcessAtPath(injectorPath));
             if (existingInjector is not null)
             {
                 if (await Confirm("injector 已在运行", $"PID {existingInjector.Id} 的 injector.exe 已存在，是否重启 injector？", "重启"))
@@ -374,7 +374,7 @@ public sealed partial class MainWindow : Window
             ExtractResourceAtomic("MclLauncher.Resources.MinecraftProxy.dll", proxyPath);
             File.WriteAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] start\r\n", Encoding.UTF8);
 
-            if (FindProcessAtPath(_launcherPath) is null)
+            if (await Task.Run(() => FindProcessAtPath(_launcherPath)) is null)
             {
                 _launcher = Process.Start(new ProcessStartInfo(_launcherPath)
                 {
@@ -415,7 +415,7 @@ public sealed partial class MainWindow : Window
             SetProxyGameStatus("等待 proxy 游戏端连接 127.0.0.1:25565", ProxyVisualState.Warning);
             StopButton.IsEnabled = true;
             StartMonitor(logPath);
-            await ShowMessage("可以启动网易游戏端", "injector 和 WPFLauncher 已启动，可以启动网易游戏端了。", "确定");
+            Log("状态：可以启动网易游戏端了。");
         }
         catch (Exception ex)
         {
@@ -435,7 +435,9 @@ public sealed partial class MainWindow : Window
             var lastLogLength = 0;
             while (!token.IsCancellationRequested)
             {
-                await DispatcherQueue.EnqueueAsync(RefreshProcesses);
+                var launcher = await Task.Run(() => _launcherPath is null ? null : FindProcessAtPath(_launcherPath));
+                var injector = await Task.Run(() => FindProcessAtPath(Path.Combine(_runtimeDir, "injector.exe")));
+                await DispatcherQueue.EnqueueAsync(() => RefreshProcesses(launcher, injector));
                 if (File.Exists(logPath))
                 {
                     string text = "";
@@ -624,14 +626,13 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void RefreshProcesses()
+    private void RefreshProcesses(Process? wpfl, Process? inj)
     {
-        var wpfl = _launcherPath is null ? null : FindProcessAtPath(_launcherPath); var inj = FindProcessAtPath(Path.Combine(_runtimeDir, "injector.exe"));
         LauncherStatus.Text = wpfl is null ? "未运行" : $"运行中 · PID {wpfl.Id}"; InjectorStatus.Text = inj is null ? "未运行" : $"运行中 · PID {inj.Id}";
         StopButton.IsEnabled = wpfl is not null || inj is not null; StartButton.IsEnabled = _launcherPath is not null && PatchStatus.Text.Contains("通过") && inj is null;
     }
 
-    private async void StopButton_Click(object sender, RoutedEventArgs e) { _monitorCts?.Cancel(); TryKill(_launcher); TryKill(_injector); if (_launcherPath is not null) TryKill(FindProcessAtPath(_launcherPath)); Log("已请求退出 WPFLauncher 和 injector。"); SetProxyGameStatus("未启动", ProxyVisualState.Neutral); await Task.Delay(250); RefreshProcesses(); }
+    private async void StopButton_Click(object sender, RoutedEventArgs e) { _monitorCts?.Cancel(); TryKill(_launcher); TryKill(_injector); var launcher = _launcherPath is null ? null : await Task.Run(() => FindProcessAtPath(_launcherPath)); TryKill(launcher); var injector = await Task.Run(() => FindProcessAtPath(Path.Combine(_runtimeDir, "injector.exe"))); TryKill(injector); Log("已请求退出 WPFLauncher 和 injector。"); SetProxyGameStatus("未启动", ProxyVisualState.Neutral); await Task.Delay(250); RefreshProcesses(null, null); }
 
     private static Process? FindProcess(string name) => Process.GetProcessesByName(Path.GetFileNameWithoutExtension(name)).FirstOrDefault(p => IsAlive(p));
     private static Process? FindProcessAtPath(string path) => Process.GetProcessesByName(Path.GetFileNameWithoutExtension(path)).FirstOrDefault(p => { try { return IsAlive(p) && string.Equals(p.MainModule?.FileName, path, StringComparison.OrdinalIgnoreCase); } catch { return false; } });
