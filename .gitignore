@@ -5,3 +5,5 @@ obj/
 launcher-paths.json
 es-test.csv
 Everything.exe
+dist/
+dist-*/

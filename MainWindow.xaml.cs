@@ -1,5 +1,7 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -27,12 +29,14 @@ public sealed partial class MainWindow : Window
     private Process? _launcher;
     private CancellationTokenSource? _monitorCts;
     private bool _injectorExitLogged;
+    private string _proxyGameState = "未启动";
     private readonly string _runtimeDir = Path.Combine(Path.GetTempPath(), "MclLauncher", "runtime");
     private string Account4399File => Path.Combine(AppContext.BaseDirectory, "4399-output", "accs.txt");
 
     public MainWindow()
     {
         InitializeComponent();
+        SetProxyGameStatus("未启动", ProxyVisualState.Neutral);
         Closed += (_, _) => _monitorCts?.Cancel();
         Log("程序已启动，管理员权限已启用。\n");
         DispatcherQueue.TryEnqueue(async () => await RestoreSavedLaunchersAsync());
@@ -346,14 +350,97 @@ public sealed partial class MainWindow : Window
         _injector = FindProcessAtPath(injectorPath) ?? shell;
         _injectorExitLogged = false;
         Log($"已启动 injector，PID {_injector?.Id}。已启动/复用 WPFLauncher。");
+        SetProxyGameStatus("等待 proxy 游戏端连接 127.0.0.1:25565", ProxyVisualState.Warning);
         StartButton.IsEnabled = false; StopButton.IsEnabled = true; StartMonitor(logPath);
         await ShowMessage("可以启动网易游戏端", "injector 和 WPFLauncher 已启动，可以启动网易游戏端了。", "确定");
     }
 
     private void StartMonitor(string logPath)
     {
-        _monitorCts?.Cancel(); _monitorCts = new CancellationTokenSource(); var token = _monitorCts.Token;
-        _ = Task.Run(async () => { while (!token.IsCancellationRequested) { await DispatcherQueue.EnqueueAsync(RefreshProcesses); if (!_injectorExitLogged && File.Exists(logPath) && !IsAlive(_injector)) { var text = File.ReadAllText(logPath); if (text.Contains("25565", StringComparison.OrdinalIgnoreCase)) { _injectorExitLogged = true; await DispatcherQueue.EnqueueAsync(() => Log("injector 已退出，状态：可以启动白端进入 127.0.0.1:25565 了")); } } await Task.Delay(700, token).ContinueWith(_ => { }); } }, token);
+        _monitorCts?.Cancel();
+        _monitorCts = new CancellationTokenSource();
+        var token = _monitorCts.Token;
+        _ = Task.Run(async () =>
+        {
+            var lastLogLength = 0;
+            while (!token.IsCancellationRequested)
+            {
+                await DispatcherQueue.EnqueueAsync(RefreshProcesses);
+                if (File.Exists(logPath))
+                {
+                    string text = "";
+                    try { text = File.ReadAllText(logPath); } catch { }
+                    if (!_injectorExitLogged && !IsAlive(_injector) && text.Contains("25565", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _injectorExitLogged = true;
+                        await DispatcherQueue.EnqueueAsync(() => Log("injector 已退出，proxy 监听已就绪；请启动/重连 proxy 游戏端到 127.0.0.1:25565。"));
+                    }
+                    await DispatcherQueue.EnqueueAsync(() => RefreshProxyGameStatusFromLog(text));
+                    lastLogLength = text.Length;
+                }
+                await Task.Delay(700, token).ContinueWith(_ => { });
+            }
+        }, token);
+    }
+
+
+    private enum ProxyVisualState { Neutral, Good, Warning, Bad }
+
+    private void SetProxyGameStatus(string text, ProxyVisualState state)
+    {
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            DispatcherQueue.TryEnqueue(() => SetProxyGameStatus(text, state));
+            return;
+        }
+        _proxyGameState = text;
+        ProxyGameStatus.Text = text;
+        ProxyGameStatus.Foreground = state switch
+        {
+            ProxyVisualState.Good => new SolidColorBrush(Colors.LimeGreen),
+            ProxyVisualState.Warning => new SolidColorBrush(Colors.Orange),
+            ProxyVisualState.Bad => new SolidColorBrush(Colors.Red),
+            _ => Microsoft.UI.Xaml.Application.Current.Resources["TextFillColorPrimaryBrush"] as Brush
+        };
+    }
+
+    private void RefreshProxyGameStatusFromLog(string logText)
+    {
+        if (string.IsNullOrWhiteSpace(logText)) return;
+        if (logText.Contains("BServer: B channelInactive", StringComparison.OrdinalIgnoreCase) ||
+            logText.Contains("B gone", StringComparison.OrdinalIgnoreCase) ||
+            logText.Contains("channelInactive", StringComparison.OrdinalIgnoreCase))
+        {
+            var lastPlay = logText.LastIndexOf("B in PLAY", StringComparison.OrdinalIgnoreCase);
+            var lastGone = Math.Max(logText.LastIndexOf("channelInactive", StringComparison.OrdinalIgnoreCase), logText.LastIndexOf("B gone", StringComparison.OrdinalIgnoreCase));
+            if (lastGone > lastPlay)
+            {
+                SetProxyGameStatus("proxy 游戏端已断开：请在白端重新连接后，再在 proxy 端重新连接直到正常", ProxyVisualState.Bad);
+                return;
+            }
+        }
+        if (logText.Contains("B in PLAY", StringComparison.OrdinalIgnoreCase) ||
+            logText.Contains("B reached PLAY", StringComparison.OrdinalIgnoreCase))
+        {
+            SetProxyGameStatus("正常：proxy 游戏端已进入游戏", ProxyVisualState.Good);
+            return;
+        }
+        if (logText.Contains("intention", StringComparison.OrdinalIgnoreCase) && logText.Contains("LOGIN", StringComparison.OrdinalIgnoreCase))
+        {
+            SetProxyGameStatus("proxy 游戏端正在登录/进服，等待进入游戏", ProxyVisualState.Warning);
+            return;
+        }
+        if (logText.Contains("B channel captured", StringComparison.OrdinalIgnoreCase) ||
+            logText.Contains("BServer: B channelActive", StringComparison.OrdinalIgnoreCase))
+        {
+            SetProxyGameStatus("proxy 游戏端已连接但未进入游戏", ProxyVisualState.Warning);
+            return;
+        }
+        if (logText.Contains("proxy listener ready", StringComparison.OrdinalIgnoreCase) ||
+            logText.Contains("25565", StringComparison.OrdinalIgnoreCase))
+        {
+            SetProxyGameStatus("等待 proxy 游戏端连接 127.0.0.1:25565", ProxyVisualState.Warning);
+        }
     }
 
     private void RefreshProcesses()
@@ -363,7 +450,7 @@ public sealed partial class MainWindow : Window
         StopButton.IsEnabled = wpfl is not null || inj is not null; StartButton.IsEnabled = _launcherPath is not null && PatchStatus.Text.Contains("通过") && inj is null;
     }
 
-    private async void StopButton_Click(object sender, RoutedEventArgs e) { _monitorCts?.Cancel(); TryKill(_launcher); TryKill(_injector); if (_launcherPath is not null) TryKill(FindProcessAtPath(_launcherPath)); Log("已请求退出 WPFLauncher 和 injector。"); await Task.Delay(250); RefreshProcesses(); }
+    private async void StopButton_Click(object sender, RoutedEventArgs e) { _monitorCts?.Cancel(); TryKill(_launcher); TryKill(_injector); if (_launcherPath is not null) TryKill(FindProcessAtPath(_launcherPath)); Log("已请求退出 WPFLauncher 和 injector。"); SetProxyGameStatus("未启动", ProxyVisualState.Neutral); await Task.Delay(250); RefreshProcesses(); }
 
     private static Process? FindProcess(string name) => Process.GetProcessesByName(Path.GetFileNameWithoutExtension(name)).FirstOrDefault(p => IsAlive(p));
     private static Process? FindProcessAtPath(string path) => Process.GetProcessesByName(Path.GetFileNameWithoutExtension(path)).FirstOrDefault(p => { try { return IsAlive(p) && string.Equals(p.MainModule?.FileName, path, StringComparison.OrdinalIgnoreCase); } catch { return false; } });
