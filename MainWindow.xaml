@@ -36,6 +36,7 @@
       <Button x:Name="StartButton" Content="一键启动" IsEnabled="False" Click="StartButton_Click"/>
       <Button x:Name="StopButton" Content="退出运行" IsEnabled="False" Click="StopButton_Click"/>
       <Button x:Name="Reg4399Button" Content="4399 批量工具" Click="Reg4399Button_Click"/>
+      <Button x:Name="Account4399Button" Content="4399 账号管理" Click="Account4399Button_Click"/>
     </StackPanel>
   </Grid>
 </Window>

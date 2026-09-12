@@ -12,6 +12,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
+using Windows.ApplicationModel.DataTransfer;
 
 namespace MclLauncher;
 
@@ -27,6 +28,7 @@ public sealed partial class MainWindow : Window
     private CancellationTokenSource? _monitorCts;
     private bool _injectorExitLogged;
     private readonly string _runtimeDir = Path.Combine(Path.GetTempPath(), "MclLauncher", "runtime");
+    private string Account4399File => Path.Combine(AppContext.BaseDirectory, "4399-output", "accs.txt");
 
     public MainWindow()
     {
@@ -367,6 +369,109 @@ public sealed partial class MainWindow : Window
     private async Task<bool> Confirm(string title, string content, string primaryText = "确定") { var dialog = new ContentDialog { Title = title, Content = content, PrimaryButtonText = primaryText, CloseButtonText = "取消", XamlRoot = Content.XamlRoot }; return await dialog.ShowAsync() == ContentDialogResult.Primary; }
     private async Task ShowMessage(string title, string content, string close) { var dialog = new ContentDialog { Title = title, Content = content, CloseButtonText = close, XamlRoot = Content.XamlRoot }; await dialog.ShowAsync(); }
 
+
+    private async void Account4399Button_Click(object sender, RoutedEventArgs e)
+    {
+        var accounts = Load4399Accounts();
+        var list = new ListView
+        {
+            SelectionMode = ListViewSelectionMode.Multiple,
+            MinWidth = 720,
+            MaxHeight = 460,
+            ItemsSource = accounts
+        };
+        list.ItemTemplate = BuildAccountRowTemplate();
+        var pathText = new TextBlock
+        {
+            Text = $"结果文件：{Account4399File}",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Microsoft.UI.Xaml.Application.Current.Resources["TextFillColorSecondaryBrush"] as Microsoft.UI.Xaml.Media.Brush
+        };
+        var panel = new StackPanel { Spacing = 10 };
+        panel.Children.Add(pathText);
+        panel.Children.Add(new TextBlock { Text = "格式：账号----密码----身份证。可按 Ctrl/Shift 多选，点复制会复制选中行的账号和密码。" });
+        panel.Children.Add(BuildAccountHeader());
+        panel.Children.Add(list);
+        var dialog = new ContentDialog
+        {
+            Title = $"4399 账号管理（{accounts.Count} 条）",
+            Content = panel,
+            PrimaryButtonText = "复制选中账号/密码",
+            SecondaryButtonText = "刷新",
+            CloseButtonText = "关闭",
+            XamlRoot = Content.XamlRoot
+        };
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.Primary)
+        {
+            var selected = list.SelectedItems.Cast<Account4399Row>().ToList();
+            if (selected.Count == 0) { Log("4399账号管理：未选中任何账号"); return; }
+            var text = string.Join(Environment.NewLine, selected.Select(x => $"{x.Username}----{x.Password}"));
+            var data = new DataPackage();
+            data.SetText(text);
+            Clipboard.SetContent(data);
+            Log($"4399账号管理：已复制 {selected.Count} 条账号/密码");
+        }
+        else if (result == ContentDialogResult.Secondary)
+        {
+            Account4399Button_Click(sender, e);
+        }
+    }
+
+    private List<Account4399Row> Load4399Accounts()
+    {
+        if (!File.Exists(Account4399File)) return new List<Account4399Row>();
+        var rows = new List<Account4399Row>();
+        var index = 1;
+        foreach (var line in File.ReadLines(Account4399File, Encoding.UTF8))
+        {
+            var parts = line.Split("----", 3, StringSplitOptions.None);
+            if (parts.Length >= 3) rows.Add(new Account4399Row(index++, parts[0], parts[1], parts[2]));
+        }
+        return rows;
+    }
+
+    private static Grid BuildAccountHeader()
+    {
+        var grid = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 0, 8, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        void Add(string text, int col)
+        {
+            var tb = new TextBlock { Text = text, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
+            Grid.SetColumn(tb, col);
+            grid.Children.Add(tb);
+        }
+        Add("序号", 0); Add("账号", 1); Add("密码", 2); Add("身份证", 3);
+        return grid;
+    }
+
+    private static DataTemplate BuildAccountRowTemplate()
+    {
+        const string xaml = """
+<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+  <Grid ColumnSpacing="12" Padding="8,6,8,6">
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="56"/>
+      <ColumnDefinition Width="180"/>
+      <ColumnDefinition Width="200"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <TextBlock Grid.Column="0" Text="{Binding Index}"/>
+    <TextBlock Grid.Column="1" Text="{Binding Username}" TextTrimming="CharacterEllipsis"/>
+    <TextBlock Grid.Column="2" Text="{Binding Password}" TextTrimming="CharacterEllipsis"/>
+    <TextBlock Grid.Column="3" Text="{Binding IdCard}" TextTrimming="CharacterEllipsis"/>
+  </Grid>
+</DataTemplate>
+""";
+        return (DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load(xaml);
+    }
+
+    private sealed record Account4399Row(int Index, string Username, string Password, string IdCard);
+
+
     private async void Reg4399Button_Click(object sender, RoutedEventArgs e)
     {
         var countBox = new TextBox { Text = "1", Header = "注册数量" };
@@ -393,7 +498,7 @@ public sealed partial class MainWindow : Window
         if (demos.Length == 0) { Log("4399: 输入文件没有有效内容"); return; }
         var outDir = Path.Combine(AppContext.BaseDirectory, "4399-output");
         Directory.CreateDirectory(outDir);
-        var outFile = Path.Combine(outDir, "accs.txt");
+        var outFile = Account4399File;
         Log($"4399: 读取 {demos.Length} 条数据，开始内部批量任务 count={count}, threads={threads}");
         var ok = 0; var fail = 0;
         using var gate = new SemaphoreSlim(threads);
