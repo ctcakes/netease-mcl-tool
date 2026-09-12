@@ -1,4 +1,4 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI;
@@ -347,29 +347,82 @@ public sealed partial class MainWindow : Window
     private async void StartButton_Click(object sender, RoutedEventArgs e)
     {
         if (_launcherPath is null) return;
-        Directory.CreateDirectory(_runtimeDir);
-        var injectorPath = Path.Combine(_runtimeDir, "injector.exe"); var proxyPath = Path.Combine(_runtimeDir, "MinecraftProxy.dll"); var logPath = Path.Combine(_runtimeDir, "injector.log");
-        ExtractResource("MclLauncher.Resources.injector.exe", injectorPath); ExtractResource("MclLauncher.Resources.MinecraftProxy.dll", proxyPath);
-        var existingInjector = FindProcessAtPath(injectorPath);
-        if (existingInjector is not null)
+        StartButton.IsEnabled = false;
+        try
         {
-            if (await Confirm("injector 已在运行", $"PID {existingInjector.Id} 的 injector.exe 已存在，是否重启 injector？", "重启")) { TryKill(existingInjector); existingInjector = null; } else return;
+            Directory.CreateDirectory(_runtimeDir);
+            var injectorPath = Path.Combine(_runtimeDir, "injector.exe");
+            var proxyPath = Path.Combine(_runtimeDir, "MinecraftProxy.dll");
+            var logPath = Path.Combine(_runtimeDir, "injector.log");
+
+            var existingInjector = FindProcessAtPath(injectorPath);
+            if (existingInjector is not null)
+            {
+                if (await Confirm("injector 已在运行", $"PID {existingInjector.Id} 的 injector.exe 已存在，是否重启 injector？", "重启"))
+                {
+                    TryKill(existingInjector);
+                    await Task.Delay(500);
+                }
+                else
+                {
+                    StartButton.IsEnabled = true;
+                    return;
+                }
+            }
+
+            ExtractResourceAtomic("MclLauncher.Resources.injector.exe", injectorPath);
+            ExtractResourceAtomic("MclLauncher.Resources.MinecraftProxy.dll", proxyPath);
+            File.WriteAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] start\r\n", Encoding.UTF8);
+
+            if (FindProcessAtPath(_launcherPath) is null)
+            {
+                _launcher = Process.Start(new ProcessStartInfo(_launcherPath)
+                {
+                    WorkingDirectory = Path.GetDirectoryName(_launcherPath),
+                    UseShellExecute = true
+                });
+                Log("已启动 WPFLauncher.exe。");
+                await Task.Delay(1500);
+            }
+            else
+            {
+                Log("已复用正在运行的 WPFLauncher.exe。");
+            }
+
+            var psi = new ProcessStartInfo(injectorPath, $"\"{proxyPath}\"")
+            {
+                WorkingDirectory = _runtimeDir,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            _injector = Process.Start(psi) ?? throw new InvalidOperationException("Process.Start 返回空进程");
+            _ = PipeProcessOutputToLogAsync(_injector, logPath);
+            _injectorExitLogged = false;
+            await Task.Delay(500);
+
+            if (_injector.HasExited)
+            {
+                var text = File.Exists(logPath) ? File.ReadAllText(logPath, Encoding.UTF8) : "";
+                Log($"injector 启动后立即退出，ExitCode={_injector.ExitCode}。日志：{text.Trim()}");
+                await ShowMessage("injector 启动失败", $"injector 启动后立即退出，ExitCode={_injector.ExitCode}\n\n{text}", "确定");
+                StartButton.IsEnabled = true;
+                return;
+            }
+
+            Log($"已启动 injector，PID {_injector.Id}。已启动/复用 WPFLauncher。");
+            SetProxyGameStatus("等待 proxy 游戏端连接 127.0.0.1:25565", ProxyVisualState.Warning);
+            StopButton.IsEnabled = true;
+            StartMonitor(logPath);
+            await ShowMessage("可以启动网易游戏端", "injector 和 WPFLauncher 已启动，可以启动网易游戏端了。", "确定");
         }
-        if (FindProcessAtPath(_launcherPath) is null)
+        catch (Exception ex)
         {
-            try { _launcher = Process.Start(new ProcessStartInfo(_launcherPath) { WorkingDirectory = Path.GetDirectoryName(_launcherPath), UseShellExecute = true }); Log("已启动 WPFLauncher.exe。"); }
-            catch (Exception ex) { Log($"启动 WPFLauncher 失败：{ex.Message}"); return; }
+            Log($"一键启动失败：{ex.Message}");
+            await ShowMessage("一键启动失败", ex.ToString(), "确定");
+            StartButton.IsEnabled = true;
         }
-        File.WriteAllText(logPath, "", Encoding.UTF8);
-        var command = $"\"{injectorPath}\" \"{proxyPath}\" > \"{logPath}\" 2>&1";
-        var shell = Process.Start(new ProcessStartInfo("cmd.exe", "/d /c \"" + command + "\"") { WorkingDirectory = _runtimeDir, UseShellExecute = false, CreateNoWindow = true });
-        await Task.Delay(250);
-        _injector = FindProcessAtPath(injectorPath) ?? shell;
-        _injectorExitLogged = false;
-        Log($"已启动 injector，PID {_injector?.Id}。已启动/复用 WPFLauncher。");
-        SetProxyGameStatus("等待 proxy 游戏端连接 127.0.0.1:25565", ProxyVisualState.Warning);
-        StartButton.IsEnabled = false; StopButton.IsEnabled = true; StartMonitor(logPath);
-        await ShowMessage("可以启动网易游戏端", "injector 和 WPFLauncher 已启动，可以启动网易游戏端了。", "确定");
     }
 
     private void StartMonitor(string logPath)
@@ -586,6 +639,34 @@ public sealed partial class MainWindow : Window
     private static void TryKill(Process? p) { try { if (IsAlive(p)) p!.Kill(true); } catch { } }
     private static string HashFile(string path) { using var md5 = MD5.Create(); using var stream = File.OpenRead(path); return Convert.ToHexString(md5.ComputeHash(stream)).ToLowerInvariant(); }
     private static void ExtractResource(string name, string path) { using var input = typeof(MainWindow).Assembly.GetManifestResourceStream(name) ?? throw new FileNotFoundException(name); using var output = File.Create(path); input.CopyTo(output); }
+    private static void ExtractResourceAtomic(string name, string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temp = path + ".tmp";
+        ExtractResource(name, temp);
+        File.Move(temp, path, true);
+    }
+
+    private static async Task PipeProcessOutputToLogAsync(Process process, string logPath)
+    {
+        async Task PumpAsync(StreamReader reader)
+        {
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync();
+                if (line is not null) await File.AppendAllTextAsync(logPath, line + Environment.NewLine, Encoding.UTF8);
+            }
+        }
+
+        try
+        {
+            await Task.WhenAll(PumpAsync(process.StandardOutput), PumpAsync(process.StandardError));
+        }
+        catch
+        {
+            // 监控日志只用于诊断，避免后台管道异常影响主界面。
+        }
+    }
     private async Task<bool> Confirm(string title, string content, string primaryText = "确定") { var dialog = new ContentDialog { Title = title, Content = content, PrimaryButtonText = primaryText, CloseButtonText = "取消", XamlRoot = Content.XamlRoot }; return await dialog.ShowAsync() == ContentDialogResult.Primary; }
     private async Task ShowMessage(string title, string content, string close) { var dialog = new ContentDialog { Title = title, Content = content, CloseButtonText = close, XamlRoot = Content.XamlRoot }; await dialog.ShowAsync(); }
 

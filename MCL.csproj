@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
@@ -29,7 +29,14 @@
     <EmbeddedResource Include="4399_demo.txt" LogicalName="MclLauncher.Resources.4399_demo.txt" />
     <Content Include="4399_demo.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Remove="dist/**;dist-*/**" />
+    <None Remove="dist/**;dist-*/**" />
+    <EmbeddedResource Remove="dist/**;dist-*/**" />
+  </ItemGroup>
 </Project>
+
+
 
 
 
