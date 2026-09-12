@@ -335,12 +335,19 @@ public sealed partial class MainWindow : Window
         {
             Directory.CreateDirectory(_runtimeDir);
             var injectorPath = Path.Combine(_runtimeDir, "injector.exe"); var proxyPath = Path.Combine(_runtimeDir, "MinecraftProxy.dll"); var logPath = Path.Combine(_runtimeDir, "injector.log");
-            ExtractResource("MclLauncher.Resources.injector.exe", injectorPath); ExtractResource("MclLauncher.Resources.MinecraftProxy.dll", proxyPath);
             var existingInjector = FindProcess("injector.exe");
             if (existingInjector is not null)
             {
-                if (await Confirm("injector 已在运行", $"PID {existingInjector.Id} 的 injector.exe 已存在，是否重启 injector？", "重启")) TryKill(existingInjector); else { StartButton.IsEnabled = true; return; }
+                if (await Confirm("injector 已在运行", $"PID {existingInjector.Id} 的 injector.exe 已存在，是否重启 injector？", "重启"))
+                {
+                    TryKill(existingInjector);
+                    try { existingInjector.WaitForExit(2000); } catch { }
+                    await Task.Delay(300);
+                }
+                else { StartButton.IsEnabled = true; return; }
             }
+            ExtractResourceAtomic("MclLauncher.Resources.injector.exe", injectorPath);
+            ExtractResourceAtomic("MclLauncher.Resources.MinecraftProxy.dll", proxyPath);
             if (FindProcess("WPFLauncher.exe") is null)
             {
                 _launcher = Process.Start(new ProcessStartInfo(_launcherPath) { WorkingDirectory = Path.GetDirectoryName(_launcherPath), UseShellExecute = true });
@@ -467,6 +474,17 @@ public sealed partial class MainWindow : Window
     private static void TryKill(Process? p) { try { if (IsAlive(p)) p!.Kill(true); } catch { } }
     private static string HashFile(string path) { using var md5 = MD5.Create(); using var stream = File.OpenRead(path); return Convert.ToHexString(md5.ComputeHash(stream)).ToLowerInvariant(); }
     private static void ExtractResource(string name, string path) { using var input = typeof(MainWindow).Assembly.GetManifestResourceStream(name) ?? throw new FileNotFoundException(name); using var output = File.Create(path); input.CopyTo(output); }
+    private static void ExtractResourceAtomic(string name, string path)
+    {
+        var temp = path + ".tmp";
+        ExtractResource(name, temp);
+        try { File.Move(temp, path, true); }
+        catch (IOException) when (File.Exists(path))
+        {
+            // A previous injector can still hold the old image briefly; leave it in place and use it.
+            try { File.Delete(temp); } catch { }
+        }
+    }
     private async Task<bool> Confirm(string title, string content, string primaryText = "确定") { var dialog = new ContentDialog { Title = title, Content = content, PrimaryButtonText = primaryText, CloseButtonText = "取消", XamlRoot = Content.XamlRoot }; return await dialog.ShowAsync() == ContentDialogResult.Primary; }
     private async Task ShowMessage(string title, string content, string close) { var dialog = new ContentDialog { Title = title, Content = content, CloseButtonText = close, XamlRoot = Content.XamlRoot }; await dialog.ShowAsync(); }
 
