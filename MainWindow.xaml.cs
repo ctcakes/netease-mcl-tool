@@ -1,4 +1,4 @@
-﻿using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System.Diagnostics;
 using System.Security.Cryptography;
@@ -40,6 +40,11 @@ public sealed partial class MainWindow : Window
 
     private void Log(string message)
     {
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            DispatcherQueue.TryEnqueue(() => Log(message));
+            return;
+        }
         LogText.Text += $"[{DateTime.Now:HH:mm:ss}] {message}\n";
         LogScrollViewer.UpdateLayout();
         LogScrollViewer.ChangeView(null, LogScrollViewer.ScrollableHeight, null);
@@ -637,3 +642,4 @@ internal static class DispatcherQueueExtensions
     public static Task EnqueueAsync(this Microsoft.UI.Dispatching.DispatcherQueue queue, Action action)
     { var tcs = new TaskCompletionSource(); if (!queue.TryEnqueue(() => { try { action(); tcs.SetResult(); } catch (Exception ex) { tcs.SetException(ex); } })) tcs.SetCanceled(); return tcs.Task; }
 }
+
