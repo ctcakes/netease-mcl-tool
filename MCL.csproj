@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
@@ -23,5 +23,11 @@
     <EmbeddedResource Include="Mcl.Core.dll" LogicalName="MclLauncher.Resources.Mcl.Core.dll" />
     <EmbeddedResource Include="MinecraftProxy.dll" LogicalName="MclLauncher.Resources.MinecraftProxy.dll" />
     <EmbeddedResource Include="es.exe" LogicalName="MclLauncher.Resources.es.exe" Condition="Exists('es.exe')" />
+    <EmbeddedResource Include="4399_demo.txt" LogicalName="MclLauncher.Resources.4399_demo.txt" />
+    <Content Include="4399_demo.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
+
+
+
+

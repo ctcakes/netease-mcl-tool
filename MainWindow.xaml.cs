@@ -1,9 +1,14 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Linq;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
+using System.Net.Http;
+using System.Net;
 using System.Runtime.InteropServices;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
@@ -361,6 +366,165 @@ public sealed partial class MainWindow : Window
     private static void ExtractResource(string name, string path) { using var input = typeof(MainWindow).Assembly.GetManifestResourceStream(name) ?? throw new FileNotFoundException(name); using var output = File.Create(path); input.CopyTo(output); }
     private async Task<bool> Confirm(string title, string content, string primaryText = "确定") { var dialog = new ContentDialog { Title = title, Content = content, PrimaryButtonText = primaryText, CloseButtonText = "取消", XamlRoot = Content.XamlRoot }; return await dialog.ShowAsync() == ContentDialogResult.Primary; }
     private async Task ShowMessage(string title, string content, string close) { var dialog = new ContentDialog { Title = title, Content = content, CloseButtonText = close, XamlRoot = Content.XamlRoot }; await dialog.ShowAsync(); }
+
+    private async void Reg4399Button_Click(object sender, RoutedEventArgs e)
+    {
+        var countBox = new TextBox { Text = "1", Header = "注册数量" };
+        var threadBox = new TextBox { Text = "1", Header = "线程数量" };
+        var nameBox = new TextBox { Text = "李艳娟", Header = "真实姓名" };
+        var inputBox = new TextBox { Text = Path.Combine(AppContext.BaseDirectory, "4399_demo.txt"), Header = "身份证/demo 数据文件，每行一条", MinWidth = 520 };
+        var panel = new StackPanel { Spacing = 10 };
+        panel.Children.Add(new TextBlock { Text = "已复刻 Python 逻辑到软件内部：随机账号密码、读取输入、多线程、AES 加密、HTTP 提交均由 C# 执行。" });
+        panel.Children.Add(countBox);
+        panel.Children.Add(threadBox);
+        panel.Children.Add(nameBox);
+        panel.Children.Add(inputBox);
+        var dialog = new ContentDialog { Title = "4399 批量工具", Content = panel, PrimaryButtonText = "开始", CloseButtonText = "取消", XamlRoot = Content.XamlRoot };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (!int.TryParse(countBox.Text, out var count) || count <= 0) { Log("4399: 注册数量无效"); return; }
+        if (!int.TryParse(threadBox.Text, out var threads) || threads <= 0) { Log("4399: 线程数量无效"); return; }
+        if (!File.Exists(inputBox.Text)) { Log($"4399: 输入文件不存在：{inputBox.Text}"); return; }
+        await Run4399BatchNativeAsync(count, Math.Min(threads, 64), nameBox.Text, inputBox.Text);
+    }
+
+    private async Task Run4399BatchNativeAsync(int count, int threads, string realName, string inputFile)
+    {
+        var demos = (await File.ReadAllLinesAsync(inputFile, Encoding.UTF8)).Select(x => x.Trim()).Where(x => x.Length > 0).ToArray();
+        if (demos.Length == 0) { Log("4399: 输入文件没有有效内容"); return; }
+        var outDir = Path.Combine(AppContext.BaseDirectory, "4399-output");
+        Directory.CreateDirectory(outDir);
+        var outFile = Path.Combine(outDir, "accs.txt");
+        Log($"4399: 读取 {demos.Length} 条数据，开始内部批量任务 count={count}, threads={threads}");
+        var ok = 0; var fail = 0;
+        using var gate = new SemaphoreSlim(threads);
+        var tasks = Enumerable.Range(0, count).Select(async _ =>
+        {
+            await gate.WaitAsync();
+            try
+            {
+                var username = RandomUsername();
+                var password = RandomPassword();
+                var idcard = demos[RandomNumberGenerator.GetInt32(demos.Length)];
+                var result = await Register4399NativeAsync(username, password, realName, idcard);
+                if (result.Ok && result.StatusCode == 200)
+                {
+                    Interlocked.Increment(ref ok);
+                    await File.AppendAllTextAsync(outFile, $"{username}----{password}----{idcard}{Environment.NewLine}", Encoding.UTF8);
+                    LogSafe($"4399: [成功] {username} {result.Message}");
+                }
+                else
+                {
+                    Interlocked.Increment(ref fail);
+                    LogSafe($"4399: [失败] {username} HTTP {result.StatusCode} {result.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Increment(ref fail);
+                LogSafe($"4399: [异常] {ex.Message}");
+            }
+            finally { gate.Release(); }
+        }).ToArray();
+        await Task.WhenAll(tasks);
+        Log($"4399: 完成，成功 {ok}，失败 {fail}，结果文件：{outFile}");
+    }
+
+    private static async Task<RegResult> Register4399NativeAsync(string username, string password, string realName, string idcard)
+    {
+        var cookies = new CookieContainer();
+        using var handler = new HttpClientHandler { CookieContainer = cookies, AutomaticDecompression = DecompressionMethods.All };
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+        http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36");
+        http.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9");
+        http.DefaultRequestHeaders.TryAddWithoutValidation("Referer", "https://my.4399.com/account/login");
+        var frameUrl = "https://ptlogin.4399.com/ptlogin/regFrame.do?regMode=reg_normal&postLoginHandler=refreshParent&displayMode=embed&appId=my&externalLogin=qq&regIdcard=true&autoLogin=false&includeFcmInfo=false&expandFcmInput=true&fcmFakeValidate=false&mainDivId=popup_reg_div&iframeId=popup_reg_frame&v=" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var html = await http.GetStringAsync(frameUrl);
+        var payload = ParseHiddenInputs(html);
+        var sec = payload.TryGetValue("sec", out var secVal) ? secVal : "1";
+        payload["username"] = username;
+        payload["email"] = "";
+        payload["reg_eula_agree"] = "on";
+        payload["password"] = sec == "1" ? EncryptCryptoJsAes(password) : password;
+        payload["passwordveri"] = sec == "1" ? EncryptCryptoJsAes(password) : password;
+        payload["realname"] = sec == "1" ? EncryptCryptoJsAes(realName) : realName;
+        payload["idcard"] = sec == "1" ? EncryptCryptoJsAes(idcard) : idcard;
+        using var content = new FormUrlEncodedContent(payload);
+        var resp = await http.PostAsync("https://ptlogin.4399.com/ptlogin/register.do", content);
+        var body = await resp.Content.ReadAsStringAsync();
+        var parsed = Parse4399Result(body);
+        return new RegResult(parsed.ok, (int)resp.StatusCode, parsed.message);
+    }
+
+    private static Dictionary<string, string> ParseHiddenInputs(string html)
+    {
+        var fields = new Dictionary<string, string>();
+        foreach (Match m in Regex.Matches(html, "<input[^>]*type=\"hidden\"[^>]*>", RegexOptions.IgnoreCase))
+        {
+            var tag = m.Value;
+            var name = Regex.Match(tag, "name=\"([^\"]+)\"", RegexOptions.IgnoreCase);
+            var value = Regex.Match(tag, "value=\"([^\"]*)\"", RegexOptions.IgnoreCase);
+            if (name.Success) fields[name.Groups[1].Value] = WebUtility.HtmlDecode(value.Success ? value.Groups[1].Value : "");
+        }
+        return fields;
+    }
+
+    private static (bool ok, string message) Parse4399Result(string html)
+    {
+        string Clean(string x) => Regex.Replace(Regex.Replace(WebUtility.HtmlDecode(x), "<[^>]+>|&nbsp;", ""), "\\s+", " ").Trim();
+        var m = Regex.Match(html, "<div class=\"login_error\">\\s*<strong>(.*?)</strong>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        if (m.Success) return (false, Clean(m.Groups[1].Value));
+        m = Regex.Match(html, "<div id=\"Msg\"[^>]*>(.*?)</div>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        if (m.Success && Clean(m.Groups[1].Value).Length > 0) return (false, Clean(m.Groups[1].Value));
+        if (html.Contains("login_comfirm", StringComparison.OrdinalIgnoreCase) || html.Contains("reg_success", StringComparison.OrdinalIgnoreCase)) return (true, "注册成功");
+        return (false, $"未识别响应 len={html.Length}");
+    }
+
+    private static string EncryptCryptoJsAes(string plain)
+    {
+        var salt = RandomNumberGenerator.GetBytes(8);
+        var pass = Encoding.UTF8.GetBytes("lzYW5qaXVqa");
+        var keyiv = EvpBytesToKey(pass, salt, 48);
+        using var aes = Aes.Create();
+        aes.KeySize = 256; aes.BlockSize = 128; aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
+        aes.Key = keyiv.Take(32).ToArray(); aes.IV = keyiv.Skip(32).Take(16).ToArray();
+        using var enc = aes.CreateEncryptor();
+        var plainBytes = Encoding.UTF8.GetBytes(plain);
+        var cipher = enc.TransformFinalBlock(plainBytes, 0, plainBytes.Length);
+        return Convert.ToBase64String(Encoding.ASCII.GetBytes("Salted__").Concat(salt).Concat(cipher).ToArray());
+    }
+
+    private static byte[] EvpBytesToKey(byte[] pass, byte[] salt, int needed)
+    {
+        using var md5 = MD5.Create();
+        var result = new List<byte>();
+        byte[] prev = Array.Empty<byte>();
+        while (result.Count < needed)
+        {
+            prev = md5.ComputeHash(prev.Concat(pass).Concat(salt).ToArray());
+            result.AddRange(prev);
+        }
+        return result.Take(needed).ToArray();
+    }
+
+    private static string RandomUsername()
+    {
+        const string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        var len = RandomNumberGenerator.GetInt32(6, 11);
+        return new string(Enumerable.Range(0, len).Select(_ => chars[RandomNumberGenerator.GetInt32(chars.Length)]).ToArray());
+    }
+
+    private static string RandomPassword()
+    {
+        const string all = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
+        while (true)
+        {
+            var s = new string(Enumerable.Range(0, 13).Select(_ => all[RandomNumberGenerator.GetInt32(all.Length)]).ToArray());
+            if (s.Any(char.IsUpper) && s.Any(char.IsLower) && s.Any(char.IsDigit) && s.Any(c => "!@#$%^&*".Contains(c))) return s;
+        }
+    }
+
+    private readonly record struct RegResult(bool Ok, int StatusCode, string Message);
+
 }
 
 internal static class DispatcherQueueExtensions
