@@ -483,28 +483,30 @@ public sealed partial class MainWindow : Window
         var threadBox = new TextBox { Text = "1", Header = "线程数量" };
         var nameBox = new TextBox { Text = "李艳娟", Header = "真实姓名" };
         var inputBox = new TextBox { Text = Path.Combine(AppContext.BaseDirectory, "4399_demo.txt"), Header = "身份证/demo 数据文件，每行一条", MinWidth = 520 };
+        var proxyBox = new CheckBox { Content = "生成请求使用代理（127.0.0.1:7897）", IsChecked = false };
         var panel = new StackPanel { Spacing = 10 };
-        panel.Children.Add(new TextBlock { Text = "已复刻 Python 逻辑到软件内部：随机账号密码、读取输入、多线程、AES 加密、HTTP 提交均由 C# 执行。" });
+        panel.Children.Add(new TextBlock { Text = "已复刻 Python 逻辑到软件内部：随机账号密码、读取输入、多线程、AES 加密、HTTP 提交均由 C# 执行。默认不使用代理。" });
         panel.Children.Add(countBox);
         panel.Children.Add(threadBox);
         panel.Children.Add(nameBox);
         panel.Children.Add(inputBox);
+        panel.Children.Add(proxyBox);
         var dialog = new ContentDialog { Title = "4399 批量工具", Content = panel, PrimaryButtonText = "开始", CloseButtonText = "取消", XamlRoot = Content.XamlRoot };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
         if (!int.TryParse(countBox.Text, out var count) || count <= 0) { Log("4399: 注册数量无效"); return; }
         if (!int.TryParse(threadBox.Text, out var threads) || threads <= 0) { Log("4399: 线程数量无效"); return; }
         if (!File.Exists(inputBox.Text)) { Log($"4399: 输入文件不存在：{inputBox.Text}"); return; }
-        await Run4399BatchNativeAsync(count, Math.Min(threads, 64), nameBox.Text, inputBox.Text);
+        await Run4399BatchNativeAsync(count, Math.Min(threads, 64), nameBox.Text, inputBox.Text, proxyBox.IsChecked == true);
     }
 
-    private async Task Run4399BatchNativeAsync(int count, int threads, string realName, string inputFile)
+    private async Task Run4399BatchNativeAsync(int count, int threads, string realName, string inputFile, bool useProxy)
     {
         var demos = (await File.ReadAllLinesAsync(inputFile, Encoding.UTF8)).Select(x => x.Trim()).Where(x => x.Length > 0).ToArray();
         if (demos.Length == 0) { Log("4399: 输入文件没有有效内容"); return; }
         var outDir = Path.Combine(AppContext.BaseDirectory, "4399-output");
         Directory.CreateDirectory(outDir);
         var outFile = Account4399File;
-        Log($"4399: 读取 {demos.Length} 条数据，开始内部批量任务 count={count}, threads={threads}");
+        Log($"4399: 读取 {demos.Length} 条数据，开始内部批量任务 count={count}, threads={threads}, 代理={(useProxy ? "启用" : "关闭")}");
         var ok = 0; var fail = 0;
         using var gate = new SemaphoreSlim(threads);
         var tasks = Enumerable.Range(0, count).Select(async _ =>
@@ -515,7 +517,7 @@ public sealed partial class MainWindow : Window
                 var username = RandomUsername();
                 var password = RandomPassword();
                 var idcard = demos[RandomNumberGenerator.GetInt32(demos.Length)];
-                var result = await Register4399NativeAsync(username, password, realName, idcard);
+                var result = await Register4399NativeAsync(username, password, realName, idcard, useProxy);
                 if (result.Ok && result.StatusCode == 200)
                 {
                     Interlocked.Increment(ref ok);
@@ -539,10 +541,15 @@ public sealed partial class MainWindow : Window
         Log($"4399: 完成，成功 {ok}，失败 {fail}，结果文件：{outFile}");
     }
 
-    private static async Task<RegResult> Register4399NativeAsync(string username, string password, string realName, string idcard)
+    private static async Task<RegResult> Register4399NativeAsync(string username, string password, string realName, string idcard, bool useProxy)
     {
         var cookies = new CookieContainer();
         using var handler = new HttpClientHandler { CookieContainer = cookies, AutomaticDecompression = DecompressionMethods.All };
+        if (useProxy)
+        {
+            handler.UseProxy = true;
+            handler.Proxy = new WebProxy("http://127.0.0.1:7897");
+        }
         using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
         http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36");
         http.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9");
@@ -581,6 +588,9 @@ public sealed partial class MainWindow : Window
     private static (bool ok, string message) Parse4399Result(string html)
     {
         string Clean(string x) => Regex.Replace(Regex.Replace(WebUtility.HtmlDecode(x), "<[^>]+>|&nbsp;", ""), "\\s+", " ").Trim();
+        var cleanHtml = Clean(html);
+        if (cleanHtml.Contains("验证码错误", StringComparison.OrdinalIgnoreCase))
+            return (false, "验证码错误，请更换代理节点");
         var m = Regex.Match(html, "<div class=\"login_error\">\\s*<strong>(.*?)</strong>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
         if (m.Success) return (false, Clean(m.Groups[1].Value));
         m = Regex.Match(html, "<div id=\"Msg\"[^>]*>(.*?)</div>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
@@ -642,4 +652,5 @@ internal static class DispatcherQueueExtensions
     public static Task EnqueueAsync(this Microsoft.UI.Dispatching.DispatcherQueue queue, Action action)
     { var tcs = new TaskCompletionSource(); if (!queue.TryEnqueue(() => { try { action(); tcs.SetResult(); } catch (Exception ex) { tcs.SetException(ex); } })) tcs.SetCanceled(); return tcs.Task; }
 }
+
 
