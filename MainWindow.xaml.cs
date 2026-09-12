@@ -22,7 +22,7 @@ namespace MclLauncher;
 public sealed partial class MainWindow : Window
 {
     private const string LauncherHash = "de08144dddf4be9dda3e751922873e54";
-    private const string CoreHash = "e59579cba0169dfcd453237d065f3c76";
+    private const string CoreHash = "eef5e9f11feee4d366444dd1cbafc2cb";
     private const string DownloadUrl = "https://adl.netease.com/d/g/mc/c/pe?type=windows";
     private readonly string _launcherCacheFile = Path.Combine(AppContext.BaseDirectory, "launcher-paths.json");
     private string? _launcherPath;
@@ -867,6 +867,7 @@ internal static class DispatcherQueueExtensions
     public static Task EnqueueAsync(this Microsoft.UI.Dispatching.DispatcherQueue queue, Action action)
     { var tcs = new TaskCompletionSource(); if (!queue.TryEnqueue(() => { try { action(); tcs.SetResult(); } catch (Exception ex) { tcs.SetException(ex); } })) tcs.SetCanceled(); return tcs.Task; }
 }
+
 
 
 
