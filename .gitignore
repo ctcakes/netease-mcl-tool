@@ -1,6 +1,5 @@
 bin/
 obj/
-artifacts/
 *.user
 *.suo
 launcher-paths.json
